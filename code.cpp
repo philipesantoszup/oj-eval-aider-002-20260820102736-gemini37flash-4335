@@ -134,6 +134,7 @@ constexpr unsigned int MOD1 = 998244353;
 constexpr unsigned int MOD2 = 1004535809;
 constexpr unsigned int G = 3;
 constexpr int MAX_NTT_SIZE = 1 << 19;
+constexpr int MAX_STATIC_LIMBS = 131072;
 
 template <unsigned int MOD, unsigned int G_VAL>
 struct NTTCalculator {
@@ -228,6 +229,10 @@ static unsigned int ntt_b2[MAX_NTT_SIZE];
 static unsigned long long ntt_res[MAX_NTT_SIZE + 10];
 static unsigned int va_buf[MAX_NTT_SIZE];
 static unsigned int vb_buf[MAX_NTT_SIZE];
+
+static unsigned int knuth_u[MAX_STATIC_LIMBS];
+static unsigned int knuth_v[MAX_STATIC_LIMBS];
+static unsigned long long schoolbook_c[MAX_STATIC_LIMBS];
 
 } // namespace
 
@@ -328,6 +333,8 @@ void int2048::read(const std::string &s) {
   }
 
   sgn = sign;
+  size_t num_digits = end - start;
+  a.reserve((num_digits + BASE_DIGITS - 1) / BASE_DIGITS);
   for (int i = (int)end; i > (int)start; i -= BASE_DIGITS) {
     int chunk_start = (i - BASE_DIGITS < (int)start) ? (int)start : i - BASE_DIGITS;
     int val = 0;
@@ -348,8 +355,15 @@ void int2048::print() {
     std::putchar('-');
   }
   std::printf("%d", a.back());
+  char limb_buf[9];
+  limb_buf[8] = '\0';
   for (int i = (int)a.size() - 2; i >= 0; --i) {
-    std::printf("%08d", a[i]);
+    int cur = a[i];
+    for (int d = 7; d >= 0; --d) {
+      limb_buf[d] = '0' + (cur % 10);
+      cur /= 10;
+    }
+    std::fputs(limb_buf, stdout);
   }
 }
 
@@ -377,8 +391,13 @@ int2048 int2048::add_abs(const int2048 &x, const int2048 &y) {
     if (i < y.a.size()) {
       carry += y.a[i];
     }
-    res.a.push_back((int)(carry % BASE));
-    carry /= BASE;
+    if (carry >= BASE) {
+      res.a.push_back((int)(carry - BASE));
+      carry = 1;
+    } else {
+      res.a.push_back((int)carry);
+      carry = 0;
+    }
   }
   res.trim();
   return res;
@@ -387,17 +406,17 @@ int2048 int2048::add_abs(const int2048 &x, const int2048 &y) {
 int2048 int2048::sub_abs(const int2048 &x, const int2048 &y) {
   int2048 res;
   res.a.resize(x.a.size(), 0);
-  long long borrow = 0;
+  int borrow = 0;
   for (size_t i = 0; i < x.a.size(); ++i) {
-    borrow += x.a[i];
+    int cur = x.a[i] - borrow;
     if (i < y.a.size()) {
-      borrow -= y.a[i];
+      cur -= y.a[i];
     }
-    if (borrow < 0) {
-      res.a[i] = (int)(borrow + BASE);
-      borrow = -1;
+    if (cur < 0) {
+      res.a[i] = cur + BASE;
+      borrow = 1;
     } else {
-      res.a[i] = (int)borrow;
+      res.a[i] = cur;
       borrow = 0;
     }
   }
@@ -411,28 +430,27 @@ int2048 int2048::mul_schoolbook(const int2048 &x, const int2048 &y) {
     return res;
   }
   size_t n = x.a.size(), m = y.a.size();
-  std::vector<unsigned long long> c(n + m, 0);
+  size_t total_len = n + m;
+  std::memset(schoolbook_c, 0, (total_len + 1) * sizeof(unsigned long long));
+
   for (size_t i = 0; i < n; ++i) {
-    unsigned long long xi = x.a[i];
+    unsigned long long xi = (unsigned long long)x.a[i];
     if (xi == 0) {
       continue;
     }
-    unsigned long long carry = 0;
     for (size_t j = 0; j < m; ++j) {
-      unsigned __int128 cur = c[i + j] + (unsigned __int128)xi * y.a[j] + carry;
-      c[i + j] = (unsigned long long)(cur % BASE);
-      carry = (unsigned long long)(cur / BASE);
+      schoolbook_c[i + j] += xi * (unsigned long long)y.a[j];
     }
-    c[i + m] += carry;
   }
-  res.a.resize(n + m + 1, 0);
+
+  res.a.reserve(total_len + 1);
   unsigned long long carry = 0;
-  for (size_t i = 0; i < n + m || carry; ++i) {
-    if (i < n + m) {
-      carry += c[i];
+  for (size_t i = 0; i < total_len || carry; ++i) {
+    if (i < total_len) {
+      carry += schoolbook_c[i];
     }
-    res.a[i] = (int)(carry % BASE);
-    carry /= BASE;
+    res.a.push_back((int)(carry % 100000000ULL));
+    carry /= 100000000ULL;
   }
   res.sgn = 1;
   res.trim();
@@ -470,18 +488,18 @@ int2048 int2048::mul_ntt(const int2048 &x, const int2048 &y) {
     K <<= 1;
   }
 
-  std::memset(ntt_a1, 0, K * sizeof(unsigned int));
-  std::memset(ntt_a2, 0, K * sizeof(unsigned int));
   std::memcpy(ntt_a1, va_buf, va_len * sizeof(unsigned int));
+  std::memset(ntt_a1 + va_len, 0, (K - va_len) * sizeof(unsigned int));
   std::memcpy(ntt_a2, va_buf, va_len * sizeof(unsigned int));
+  std::memset(ntt_a2 + va_len, 0, (K - va_len) * sizeof(unsigned int));
 
   bool is_square = (&x == &y) || (x.a == y.a);
 
   if (!is_square) {
-    std::memset(ntt_b1, 0, K * sizeof(unsigned int));
-    std::memset(ntt_b2, 0, K * sizeof(unsigned int));
     std::memcpy(ntt_b1, vb_buf, vb_len * sizeof(unsigned int));
+    std::memset(ntt_b1 + vb_len, 0, (K - vb_len) * sizeof(unsigned int));
     std::memcpy(ntt_b2, vb_buf, vb_len * sizeof(unsigned int));
+    std::memset(ntt_b2 + vb_len, 0, (K - vb_len) * sizeof(unsigned int));
   }
 
   NTTCalculator<MOD1, G>::ntt(ntt_a1, (int)K, false);
@@ -512,7 +530,7 @@ int2048 int2048::mul_ntt(const int2048 &x, const int2048 &y) {
 
   static const unsigned int inv_mod1_mod2 = NTTCalculator<MOD2, G>::mod_inv(MOD1 % MOD2);
 
-  std::memset(ntt_res, 0, (K + 10) * sizeof(unsigned long long));
+  std::memset(ntt_res, 0, (need + 10) * sizeof(unsigned long long));
   unsigned long long carry = 0;
   for (size_t i = 0; i < need || carry; ++i) {
     if (i < need) {
@@ -527,7 +545,7 @@ int2048 int2048::mul_ntt(const int2048 &x, const int2048 &y) {
     carry /= 10000;
   }
 
-  size_t res_len = K + 10;
+  size_t res_len = need + 10;
   while (res_len > 0 && ntt_res[res_len - 1] == 0) {
     --res_len;
   }
@@ -573,7 +591,7 @@ int2048 int2048::shift_limbs_right(const int2048 &x, size_t k) {
 
 int2048 int2048::compute_reciprocal(const int2048 &B) {
   size_t m = B.a.size();
-  if (m <= 64) {
+  if (m <= 400) {
     int2048 num;
     num.a.assign(2 * m + 1, 0);
     num.a[2 * m] = 1;
@@ -632,10 +650,11 @@ int2048 int2048::compute_reciprocal(const int2048 &B) {
 void int2048::div_mod_small(const int2048 &x, int v, int2048 &q, int2048 &r) {
   q.a.resize(x.a.size(), 0);
   unsigned long long rem = 0;
+  unsigned long long uv = (unsigned long long)v;
   for (int i = (int)x.a.size() - 1; i >= 0; --i) {
-    rem = rem * BASE + x.a[i];
-    q.a[i] = (int)(rem / v);
-    rem %= v;
+    rem = rem * 100000000ULL + (unsigned long long)x.a[i];
+    q.a[i] = (int)(rem / uv);
+    rem %= uv;
   }
   q.sgn = 1;
   q.trim();
@@ -656,66 +675,63 @@ void int2048::div_mod_knuth(const int2048 &x, const int2048 &y, int2048 &q, int2
     return;
   }
 
-  int d = BASE / (y.a[m - 1] + 1);
-
-  std::vector<unsigned long long> u(x.a.size() + 1, 0);
-  std::vector<unsigned long long> v(m, 0);
+  unsigned long long d = 100000000ULL / ((unsigned long long)y.a[m - 1] + 1);
 
   unsigned long long carry = 0;
   for (int i = 0; i < m; ++i) {
     unsigned long long cur = (unsigned long long)y.a[i] * d + carry;
-    v[i] = cur % BASE;
-    carry = cur / BASE;
+    carry = cur / 100000000ULL;
+    knuth_v[i] = (unsigned int)(cur - carry * 100000000ULL);
   }
 
   carry = 0;
   for (size_t i = 0; i < x.a.size(); ++i) {
     unsigned long long cur = (unsigned long long)x.a[i] * d + carry;
-    u[i] = cur % BASE;
-    carry = cur / BASE;
+    carry = cur / 100000000ULL;
+    knuth_u[i] = (unsigned int)(cur - carry * 100000000ULL);
   }
-  u[x.a.size()] = carry;
+  knuth_u[x.a.size()] = (unsigned int)carry;
 
-  q.a.resize(n + 1, 0);
+  q.a.assign(n + 1, 0);
 
   for (int j = n; j >= 0; --j) {
-    unsigned __int128 num = ((unsigned __int128)u[j + m] * BASE) + u[j + m - 1];
-    unsigned long long q_hat = (unsigned long long)(num / v[m - 1]);
-    unsigned long long r_hat = (unsigned long long)(num % v[m - 1]);
+    unsigned long long num = (unsigned long long)knuth_u[j + m] * 100000000ULL + knuth_u[j + m - 1];
+    unsigned long long q_hat = num / knuth_v[m - 1];
+    unsigned long long r_hat = num - q_hat * knuth_v[m - 1];
 
-    while (q_hat >= BASE || (unsigned __int128)q_hat * v[m - 2] > ((unsigned __int128)r_hat * BASE + u[j + m - 2])) {
+    while (q_hat >= 100000000ULL || q_hat * knuth_v[m - 2] > r_hat * 100000000ULL + knuth_u[j + m - 2]) {
       --q_hat;
-      r_hat += v[m - 1];
-      if (r_hat >= BASE) {
+      r_hat += knuth_v[m - 1];
+      if (r_hat >= 100000000ULL) {
         break;
       }
     }
 
     unsigned long long sub_carry = 0;
     for (int i = 0; i < m; ++i) {
-      unsigned __int128 prod = (unsigned __int128)q_hat * v[i] + sub_carry;
-      unsigned long long p_low = (unsigned long long)(prod % BASE);
-      sub_carry = (unsigned long long)(prod / BASE);
-      if (u[j + i] < p_low) {
-        u[j + i] += BASE - p_low;
+      unsigned long long prod = q_hat * knuth_v[i] + sub_carry;
+      sub_carry = prod / 100000000ULL;
+      unsigned long long p_low = prod - sub_carry * 100000000ULL;
+      if (knuth_u[j + i] < p_low) {
+        knuth_u[j + i] += (unsigned int)(100000000ULL - p_low);
         sub_carry++;
       } else {
-        u[j + i] -= p_low;
+        knuth_u[j + i] -= (unsigned int)p_low;
       }
     }
 
-    if (u[j + m] < sub_carry) {
-      u[j + m] += BASE - sub_carry;
+    if (knuth_u[j + m] < sub_carry) {
+      knuth_u[j + m] += (unsigned int)(100000000ULL - sub_carry);
       --q_hat;
       unsigned long long add_carry = 0;
       for (int i = 0; i < m; ++i) {
-        unsigned long long sum = u[j + i] + v[i] + add_carry;
-        u[j + i] = sum % BASE;
-        add_carry = sum / BASE;
+        unsigned long long sum = (unsigned long long)knuth_u[j + i] + knuth_v[i] + add_carry;
+        add_carry = sum / 100000000ULL;
+        knuth_u[j + i] = (unsigned int)(sum - add_carry * 100000000ULL);
       }
-      u[j + m] = (u[j + m] + add_carry) % BASE;
+      knuth_u[j + m] = (unsigned int)((knuth_u[j + m] + add_carry) % 100000000ULL);
     } else {
-      u[j + m] -= sub_carry;
+      knuth_u[j + m] -= (unsigned int)sub_carry;
     }
     q.a[j] = (int)q_hat;
   }
@@ -723,10 +739,10 @@ void int2048::div_mod_knuth(const int2048 &x, const int2048 &y, int2048 &q, int2
   q.sgn = 1;
   q.trim();
 
-  r.a.resize(m, 0);
+  r.a.assign(m, 0);
   unsigned long long rem_carry = 0;
   for (int i = m - 1; i >= 0; --i) {
-    unsigned long long cur = rem_carry * BASE + u[i];
+    unsigned long long cur = rem_carry * 100000000ULL + knuth_u[i];
     r.a[i] = (int)(cur / d);
     rem_carry = cur % d;
   }
@@ -795,10 +811,27 @@ void int2048::div_mod_newton(const int2048 &x, const int2048 &y, int2048 &q, int
     }
   }
 
-  q = int2048();
+  q.a.clear();
+  q.a.resize(n - m + 2, 0);
   for (size_t i = 0; i < k; ++i) {
-    if (!q_blocks[i].a.empty()) {
-      q = add_abs(q, shift_limbs_left(q_blocks[i], i * M));
+    size_t offset = i * M;
+    for (size_t j = 0; j < q_blocks[i].a.size(); ++j) {
+      if (offset + j < q.a.size()) {
+        q.a[offset + j] += q_blocks[i].a[j];
+      } else {
+        q.a.push_back(q_blocks[i].a[j]);
+      }
+    }
+  }
+  long long carry = 0;
+  for (size_t i = 0; i < q.a.size() || carry; ++i) {
+    if (i < q.a.size()) {
+      carry += q.a[i];
+      q.a[i] = (int)(carry % BASE);
+      carry /= BASE;
+    } else {
+      q.a.push_back((int)(carry % BASE));
+      carry /= BASE;
     }
   }
   q.sgn = 1;
@@ -827,7 +860,10 @@ void int2048::div_mod_abs(const int2048 &x, const int2048 &y, int2048 &q, int204
     return;
   }
 
-  if (y.a.size() <= 64) {
+  size_t n = x.a.size();
+  size_t m = y.a.size();
+
+  if (m <= 800 || (n - m) <= 100 || (n - m + 1) * m <= 2000000) {
     div_mod_knuth(x, y, q, r);
     return;
   }
@@ -962,7 +998,9 @@ int2048 &int2048::operator*=(const int2048 &other) {
     return *this;
   }
   int target_sgn = (sgn == other.sgn) ? 1 : -1;
-  if (a.size() * other.a.size() <= 256) {
+  size_t sa = a.size();
+  size_t sb = other.a.size();
+  if (sa * sb <= 2048 || sa <= 16 || sb <= 16) {
     *this = mul_schoolbook(*this, other);
   } else {
     *this = mul_ntt(*this, other);
@@ -1027,15 +1065,26 @@ std::ostream &operator<<(std::ostream &os, const int2048 &x) {
     os << 0;
     return os;
   }
+  std::string s;
+  s.reserve(x.a.size() * int2048::BASE_DIGITS + 2);
   if (x.sgn == -1) {
-    os << '-';
+    s.push_back('-');
   }
-  os << x.a.back();
-  char buf[16];
+  int high = x.a.back();
+  char high_buf[16];
+  int high_len = std::snprintf(high_buf, sizeof(high_buf), "%d", high);
+  s.append(high_buf, high_len);
+
   for (int i = (int)x.a.size() - 2; i >= 0; --i) {
-    std::snprintf(buf, sizeof(buf), "%08d", x.a[i]);
-    os << buf;
+    int cur = x.a[i];
+    char limb_buf[8];
+    for (int d = 7; d >= 0; --d) {
+      limb_buf[d] = (char)('0' + (cur % 10));
+      cur /= 10;
+    }
+    s.append(limb_buf, 8);
   }
+  os << s;
   return os;
 }
 
