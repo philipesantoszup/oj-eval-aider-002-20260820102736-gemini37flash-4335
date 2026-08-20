@@ -21,10 +21,10 @@ namespace sjtu {
 class int2048 {
 private:
   int sgn;             // 1 for >= 0, -1 for < 0
-  std::vector<int> a;  // Digits stored in base 10^9 (little-endian)
+  std::vector<int> a;  // Digits stored in base 10^8 (little-endian)
 
-  static const int BASE = 1000000000;
-  static const int BASE_DIGITS = 9;
+  static const int BASE = 100000000;
+  static const int BASE_DIGITS = 8;
 
   void trim();
 
@@ -33,6 +33,14 @@ private:
   static int2048 sub_abs(const int2048 &x, const int2048 &y);
   static int2048 mul_schoolbook(const int2048 &x, const int2048 &y);
   static int2048 mul_ntt(const int2048 &x, const int2048 &y);
+
+  static int2048 shift_limbs_left(const int2048 &x, size_t k);
+  static int2048 shift_limbs_right(const int2048 &x, size_t k);
+  static int2048 compute_reciprocal(const int2048 &B);
+
+  static void div_mod_small(const int2048 &x, int v, int2048 &q, int2048 &r);
+  static void div_mod_knuth(const int2048 &x, const int2048 &y, int2048 &q, int2048 &r);
+  static void div_mod_newton(const int2048 &x, const int2048 &y, int2048 &q, int2048 &r);
   static void div_mod_abs(const int2048 &x, const int2048 &y, int2048 &q, int2048 &r);
   static void div_mod(const int2048 &x, const int2048 &y, int2048 &q, int2048 &r);
 
